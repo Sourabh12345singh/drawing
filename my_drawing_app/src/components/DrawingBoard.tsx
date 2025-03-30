@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { socket } from "../socket";
-import DownloadButtons from "./DownloadButton";
 import toast from "react-hot-toast";
+import ArtNavbar from "./art-navbar";
+import { useParams } from "react-router-dom";
 
 interface Stroke {
   x: number;
@@ -11,17 +12,28 @@ interface Stroke {
   color: string;
 }
 
+interface TextObject {
+  id: number;
+  text: string;
+  x: number;
+  y: number;
+}
+
 const DrawingBoard = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [textObjects, setTextObjects] = useState<TextObject[]>([]);
   const [undoStack, setUndoStack] = useState<Stroke[][]>([]);
   const [redoStack, setRedoStack] = useState<Stroke[][]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isDraggingText, setIsDraggingText] = useState(false);
+  const [selectedText, setSelectedText] = useState<TextObject | null>(null);
   const [lineWidth, setLineWidth] = useState(3);
   const [isEraser, setIsEraser] = useState(false);
-  const [bgColor, setBgColor] = useState("#f0f0f0"); // Default background color
-  // const[isShapeMode, setIsShapeMode] = useState(false);
+  const [bgColor, setBgColor] = useState("#f0f0f0");
+  const { sessionId } = useParams();
+  const currentSessionId = sessionId || "";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -34,67 +46,19 @@ const DrawingBoard = () => {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctxRef.current = ctx;
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      redrawCanvas();
     }
-  }, [bgColor]);
+  }, [bgColor, strokes, textObjects]);
 
-  const startDrawing = (e: React.MouseEvent) => {
-    if (!ctxRef.current) return;
-
-    setIsDrawing(true);
-    const { offsetX, offsetY } = e.nativeEvent;
-    const color = isEraser ? bgColor : "black"; // Eraser uses bg color
-    const width = isEraser ? lineWidth * 2 : lineWidth; // Eraser is slightly larger
-
-    ctxRef.current.lineWidth = width;
-    ctxRef.current.strokeStyle = color;
-
-    const newStroke: Stroke = { x: offsetX, y: offsetY, dragging: false, lineWidth: width, color };
-    setUndoStack((prev) => [...prev, strokes]);
-    setStrokes((prev) => [...prev, newStroke]);
-
-    socket.emit("drawing", newStroke);
-  };
-
-  const draw = (e: React.MouseEvent) => {
-    if (!isDrawing || !ctxRef.current) return;
-
-    const { offsetX, offsetY } = e.nativeEvent;
-    const color = isEraser ? bgColor : "black";
-    const width = isEraser ? lineWidth * 2 : lineWidth;
-
-    ctxRef.current.lineWidth = width;
-    ctxRef.current.strokeStyle = color;
-
-    const newStroke: Stroke = { x: offsetX, y: offsetY, dragging: true, lineWidth: width, color };
-    setStrokes((prev) => [...prev, newStroke]);
-
-    socket.emit("drawing", newStroke);
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
-
-  useEffect(() => {
-    socket.on("drawing", (data: Stroke) => {
-      setStrokes((prev) => [...prev, data]);
-    });
-
-    return () => {
-      socket.off("drawing");
-    };
-  }, []);
-
-  useEffect(() => {
+  const redrawCanvas = () => {
     const ctx = ctxRef.current;
-    if (!ctx) return;
+    const canvas = canvasRef.current;
+    if (!ctx || !canvas) return;
 
     ctx.fillStyle = bgColor;
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    // Draw strokes
     strokes.forEach((stroke, index) => {
       ctx.beginPath();
       ctx.lineWidth = stroke.lineWidth;
@@ -107,35 +71,128 @@ const DrawingBoard = () => {
       ctx.lineTo(stroke.x, stroke.y);
       ctx.stroke();
     });
-  }, [strokes, bgColor]);
+
+    // Draw text
+    textObjects.forEach(textObj => {
+      ctx.font = '16px Arial';
+      ctx.fillStyle = 'black';
+      ctx.fillText(textObj.text, textObj.x, textObj.y);
+    });
+  };
+
+  const startDrawing = (e: React.MouseEvent) => {
+    if (!ctxRef.current || isDraggingText) return;
+
+    setIsDrawing(true);
+    const { offsetX, offsetY } = e.nativeEvent;
+    const color = isEraser ? bgColor : "black";
+    const width = isEraser ? lineWidth * 2 : lineWidth;
+
+    ctxRef.current.lineWidth = width;
+    ctxRef.current.strokeStyle = color;
+
+    const newStroke: Stroke = { x: offsetX, y: offsetY, dragging: false, lineWidth: width, color };
+    setUndoStack((prev) => [...prev, strokes]);
+    setStrokes((prev) => [...prev, newStroke]);
+    socket.emit("drawing", newStroke);
+  };
+
+  const draw = (e: React.MouseEvent) => {
+    if (!isDrawing || !ctxRef.current || isDraggingText) return;
+
+    const { offsetX, offsetY } = e.nativeEvent;
+    const color = isEraser ? bgColor : "black";
+    const width = isEraser ? lineWidth * 2 : lineWidth;
+
+    ctxRef.current.lineWidth = width;
+    ctxRef.current.strokeStyle = color;
+
+    const newStroke: Stroke = { x: offsetX, y: offsetY, dragging: true, lineWidth: width, color };
+    setStrokes((prev) => [...prev, newStroke]);
+    socket.emit("drawing", newStroke);
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+    setIsDraggingText(false);
+    setSelectedText(null);
+  };
+
+  const handleTextMouseDown = (e: React.MouseEvent) => {
+    if (!canvasRef.current || isDrawing) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+
+    const clickedText = textObjects.find(text => {
+      ctx.font = '16px Arial';
+      const width = ctx.measureText(text.text).width;
+      return x >= text.x && 
+             x <= text.x + width && 
+             y >= text.y - 16 && 
+             y <= text.y;
+    });
+
+    if (clickedText) {
+      setSelectedText(clickedText);
+      setIsDraggingText(true);
+    }
+  };
+
+  const handleTextMouseMove = (e: React.MouseEvent) => {
+    if (!isDraggingText || !selectedText || !canvasRef.current) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setTextObjects(textObjects.map(text => 
+      text.id === selectedText.id ? { ...text, x, y } : text
+    ));
+  };
+
+  useEffect(() => {
+    socket.on("drawing", (data: Stroke) => {
+      setStrokes((prev) => [...prev, data]);
+    });
+
+    return () => {
+      socket.off("drawing");
+    };
+  }, []);
 
   const handleUndo = () => {
     if (undoStack.length === 0) {
       toast.error("Nothing to undo!");
-      return;}
+      return;
+    }
     const previousState = undoStack.pop()!;
-//yaha mere stack pore system k liye ek hi banana chahiye
     setRedoStack((prev) => [...prev, strokes]);
     setStrokes(previousState);
     toast.success("Last stroke undone!");
   };
 
   const handleRedo = () => {
-    if (redoStack.length === 0)
-    {toast.error("No more strokes to redo!");
-      return;}
+    if (redoStack.length === 0) {
+      toast.error("No more strokes to redo!");
+      return;
+    }
     const nextState = redoStack.pop()!;
     setUndoStack((prev) => [...prev, strokes]);
     setStrokes(nextState);
     toast.success("Redo performed!");
   };
 
-  
   const handleClear = () => {
     setStrokes([]);
-    const ctx = ctxRef.current;
+    setTextObjects([]);
     setUndoStack([]);
     setRedoStack([]);
+    const ctx = ctxRef.current;
     if (ctx) {
       ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
@@ -143,42 +200,36 @@ const DrawingBoard = () => {
     }
   };
 
+  const addText = (text: string) => {
+    const newText: TextObject = {
+      id: Date.now(),
+      text,
+      x: 50, // Default position
+      y: 50,
+    };
+    setTextObjects([...textObjects, newText]);
+  };
+
   return (
     <div className="relative w-screen h-screen flex items-center justify-center bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500">
-      {/* Controls Panel */}
-      <div className="absolute top-4 right-4 flex gap-3 p-4 bg-white/10 backdrop-blur-lg rounded-xl shadow-xl border border-white/20">
-        <button
-          onClick={handleClear}
-          className="px-5 py-2 text-white font-semibold bg-blue-600 hover:bg-blue-700 rounded-lg shadow-md transition-all duration-300 transform hover:scale-110 hover:shadow-xl"
-        >
-          🧹 Clear
-        </button>
-        <button
-          onClick={handleUndo}
-          className="px-5 py-2 text-white font-semibold bg-gray-600 hover:bg-gray-700 rounded-lg shadow-md transition-all duration-300 transform hover:scale-110 hover:shadow-xl"
-        >
-          ↩️ Undo
-        </button>
-        <button
-          onClick={handleRedo}
-          className="px-5 py-2 text-white font-semibold bg-gray-600 hover:bg-gray-700 rounded-lg shadow-md transition-all duration-300 transform hover:scale-110 hover:shadow-xl"
-        >
-          ↪️ Redo
-        </button>
-        <button
-          onClick={() => setIsEraser((prev) => !prev)}
-          className={`px-5 py-2 text-white font-semibold rounded-lg shadow-md transition-all duration-300 transform hover:scale-110 hover:shadow-xl ${
-            isEraser ? "bg-red-600 hover:bg-red-700" : "bg-gray-600 hover:bg-gray-700"
-          }`}
-        >
-          {isEraser ? "✂️ Eraser ON" : "✏️ Eraser OFF"}
-        </button>
-      </div>
-  
-      {/* Brush & Background Controls */}
-      <div className="absolute bottom-4 left-4 flex flex-col gap-3 p-4 bg-white/10 backdrop-blur-lg rounded-xl shadow-xl border border-white/20">
-        <label className="flex items-center gap-3 text-white font-semibold">
-          <span> {isEraser ? "Eraser Size:" : "Brush Size:"}</span>
+      <ArtNavbar
+        handleClear={handleClear}
+        handleUndo={handleUndo}
+        handleRedo={handleRedo}
+        isEraser={isEraser}
+        setIsEraser={setIsEraser}
+        canvasRef={canvasRef}
+        bgcolor={bgColor}
+        strokes={strokes}
+        setStrokes={setStrokes}
+        sessionId={currentSessionId}
+        addText={addText}
+        textObjects={textObjects}
+      />
+      
+      <div className="fixed bottom-5 left-4 flex flex-col gap-3 p-4 bg-gray-500/30 text-black/70 backdrop-blur-lg rounded-xl shadow-xl border border-white/20">
+        <label className="flex items-center gap-3 font-semibold">
+          <span>{isEraser ? "Eraser Size:" : "Brush Size:"}</span>
           <input
             type="range"
             min="2"
@@ -188,9 +239,8 @@ const DrawingBoard = () => {
             className="cursor-pointer accent-purple-500"
           />
         </label>
-  
-        <label className="flex items-center gap-3 text-white font-semibold">
-          <span> Background:</span>
+        <label className="flex items-center gap-3 font-semibold">
+          <span>Background:</span>
           <input
             type="color"
             value={bgColor}
@@ -198,19 +248,17 @@ const DrawingBoard = () => {
             className="w-10 h-6 border border-white/30 rounded-lg shadow-md bg-transparent"
           />
         </label>
-      </div>
-  
-  
-  
-  
-      {/* Download Button */}
-      <DownloadButtons canvasRef={canvasRef} />
-  
-      {/* Canvas */}
+      </div>  
       <canvas
         ref={canvasRef}
-        onMouseDown={startDrawing}
-        onMouseMove={draw}
+        onMouseDown={(e) => {
+          startDrawing(e);
+          handleTextMouseDown(e);
+        }}
+        onMouseMove={(e) => {
+          draw(e);
+          handleTextMouseMove(e);
+        }}
         onMouseUp={stopDrawing}
         onMouseOut={stopDrawing}
         className="border border-gray-400 shadow-xl rounded-xl transition-all duration-300 hover:shadow-2xl"
@@ -219,5 +267,5 @@ const DrawingBoard = () => {
     </div>
   );
 };
-  
+
 export default DrawingBoard;

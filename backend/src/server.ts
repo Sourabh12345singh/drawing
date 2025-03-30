@@ -1,15 +1,11 @@
-import express from "express";
+ import express, { Request, Response, Router } from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import drawingRoutes from "./routes/drawing";
-import {
-  handleUserJoin,
-  handleUserRemove,
-  handleUserDisconnect,
-} from "./collaboration";
+import Drawing from "./models/Drawing"; // Ensure correct path
+import { text } from "stream/consumers";
 
 dotenv.config();
 
@@ -38,58 +34,122 @@ const io = new Server(server, {
   },
 });
 
-// 🟢 Store connected users
-let users: { [socketId: string]: { username: string; } } = {};
-
 // ✅ Handle WebSocket Connections
 io.on("connection", (socket) => {
   console.log(`⚡ New user connected: ${socket.id}`);
 
-  // Generate a session ID when a user connects
-const sessionId = socket.id;
-socket.emit("sessionId", sessionId); // Send session ID to the client
-console.log(`⚡ Assigned session ID: ${sessionId}`);
+  // Generate and send a session ID when a user connects
+  const sessionId = socket.id;
+  socket.emit("sessionId", sessionId);
+  console.log(`⚡ Assigned session ID: ${sessionId}`);
 
-
-   // Handle user joining a shared session
-   socket.on("joinSession", (sessionId) => {
+  // Handle user joining a shared session
+  socket.on("joinSession", (sessionId) => {
     console.log(`📢 User ${socket.id} joined session: ${sessionId}`);
     socket.join(sessionId);
   });
 
-  // Handle drawing events
+  // Handle drawing events (broadcast to other users in the session)
   socket.on("drawing", (data) => {
-    socket.broadcast.emit("drawing", data);
+    socket.broadcast.to(data.sessionId).emit("drawing", data);
   });
 
-  // // 🟢 Admin removes a user
-  // socket.on("removeUser", (username) => {
-  //   const userSocketId = Object.keys(users).find((id) => users[id].username === username);
-  //   if (userSocketId) {
-  //     io.to(userSocketId).emit("removed"); // Notify user
-  //     delete users[userSocketId];
-  //     io.emit("updateUsers", Object.values(users));
-  //   }
-  // });
+  // Handle saving drawings via Socket.io
+  socket.on("saveDrawing", async ({ sessionId, strokes, textObjects }) => {
+    try {
+      // console.log("Saving drawing:", sessionId, strokes);
+      const trimmedSessionId = sessionId.trim();
+      let drawing = await Drawing.findOne({ sessionId: trimmedSessionId });
+
+      if (!drawing) {
+        drawing = new Drawing({ sessionId: trimmedSessionId, strokes, textObjects });
+      } else {
+        drawing.textObjects.push(...textObjects);
+        drawing.strokes.push(...strokes);
+      }
+
+      await drawing.save();
+      io.to(trimmedSessionId).emit("strokesUpdated", drawing.strokes);
+      socket.emit("drawingSaved", { message: "Drawing saved successfully!" });
+    } catch (error) {
+      socket.emit("error", { message: "Error saving drawing" });
+    }
+  });
+
+
+  // Handle fetching drawings via Socket.io
+socket.on("getDrawing", async ({ sessionId }) => {
+  try {
+    const trimmedSessionId = sessionId.trim();
+    const drawing = await Drawing.findOne({ sessionId: trimmedSessionId });
+
+    if (!drawing) {
+      socket.emit("drawingNotFound", { message: "No drawing found for this session." });
+    } else {
+      socket.emit("drawingFetched", drawing.strokes, drawing.textObjects);
+    }
+  } catch (error) {
+    socket.emit("error", { message: "Error retrieving drawing" });
+  }
+});
+
 
   // Handle user disconnect
   socket.on("disconnect", () => {
-    delete users[socket.id];
-    io.emit("updateUsers", Object.values(users));
     console.log(`❌ User disconnected: ${socket.id}`);
   });
 });
 
-// ✅ Connect to MongoDB
+// ✅ Express API Routes
+const router = Router();
+
+router.post("/:sessionId", async (req: Request, res: Response) => {
+  try {
+    const trimmedSessionId = req.params.sessionId.trim();
+    const { strokes } = req.body;
+
+    let drawing = await Drawing.findOne({ sessionId: trimmedSessionId });
+
+    if (!drawing) {
+      drawing = new Drawing({ sessionId: trimmedSessionId, strokes });
+    } else {
+      drawing.strokes.push(...strokes);
+    }
+
+    await drawing.save();
+    io.to(trimmedSessionId).emit("strokesUpdated", drawing.strokes);
+
+    res.json(drawing);
+  } catch (error) {
+    res.status(500).json({ error: "Error saving drawing" });
+  }
+});
+
+router.get("/:sessionId", async (req: Request, res: Response) => {
+  try {
+    const trimmedSessionId = req.params.sessionId.trim();
+    const drawing = await Drawing.findOne({ sessionId: trimmedSessionId });
+
+    if (!drawing) {
+      return res.status(404).json({ message: "No drawing found" });
+    }
+
+    return res.json(drawing);
+  } catch (error) {
+    return res.status(500).json({ error: "Error retrieving drawing" });
+  }
+});
+
+// ✅ Register Routes
+app.use("/api/drawings", router);
+
+// ✅ Connect to MongoDB and Start Server
 mongoose
   .connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
+  .then(() => {
+    console.log("✅ MongoDB Connected");
+    server.listen(PORT, () => {
+      console.log(`🚀 Server is running on http://localhost:${PORT}`);
+    });
+  })
   .catch((err) => console.error("❌ MongoDB Connection Error:", err));
-
-// ✅ API Routes
-app.use("/api/drawings", drawingRoutes);
-
-// ✅ Start Server
-server.listen(PORT, () => {
-  console.log(`🚀 Server is running on http://localhost:${PORT}`);
-});

@@ -1,45 +1,50 @@
-import html2canvas from "html2canvas";
+// import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 
-interface DownloadButtonsProps {
-  canvasRef: React.RefObject<HTMLCanvasElement | null>; // Accepts possible null values
-}
+export const handleDownloadPNG = (canvasRef: React.RefObject<HTMLCanvasElement>) => {
+  const canvas = canvasRef.current;
+  if (!canvas) return;
 
-const DownloadButtons: React.FC<DownloadButtonsProps> = ({ canvasRef }) => {
-  const handleDownloadPNG = async () => {
-    if (!canvasRef.current) return; // Ensure canvas is not null
-
-    const canvas = canvasRef.current;
-    const image = canvas.toDataURL("image/png");
-
-    const link = document.createElement("a");
-    link.href = image;
-    link.download = "drawing.png";
-    link.click();
-  };
-
-  const handleDownloadPDF = async () => {
-    if (!canvasRef.current) return; // Ensure canvas is not null
-  
-    const canvas = canvasRef.current;
-    const image = await html2canvas(canvas);
-    const imgData = image.toDataURL("image/png");
-  
-    const pdf = new jsPDF("landscape");
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = (image.height * pdfWidth) / image.width; // Maintain aspect ratio
-  
-    pdf.addImage(imgData, "PNG", 10, 10, pdfWidth - 20, pdfHeight - 20); // Now with width & height
-    pdf.save("drawing.pdf");
-  };
-  
-
-  return (
-    <div className="absolute top-2 left-2 flex gap-2">
-      <button onClick={handleDownloadPNG} className="px-4 py-2 bg-green-500 text-white rounded">Download PNG</button>
-      <button onClick={handleDownloadPDF} className="px-4 py-2 bg-red-500 text-white rounded">Download PDF</button>
-    </div>
-  );
+  const image = canvas.toDataURL("image/png");
+  const link = document.createElement("a");
+  link.href = image;
+  link.download = "drawing.png";
+  link.click();
 };
 
-export default DownloadButtons;
+export const handleDownloadPDF = (
+  canvasRef: React.RefObject<HTMLCanvasElement | null>,
+  bgColor: string = "#ffffff" // Use a supported color format (HEX or RGB)
+) => {
+  if (!canvasRef.current) return;
+  
+  const canvas = canvasRef.current;
+  
+  // Create a temporary canvas to merge the background and the drawing
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = canvas.width;
+  tempCanvas.height = canvas.height;
+  const ctx = tempCanvas.getContext("2d");
+  if (!ctx) return;
+  
+  // Fill the temporary canvas with the desired background color
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+  
+  // Draw the original canvas on top of the background
+  ctx.drawImage(canvas, 0, 0);
+  
+  // Convert the temporary canvas to an image data URL
+  const imgData = tempCanvas.toDataURL("image/png");
+  
+  // Create a new PDF document in landscape mode
+  const pdf = new jsPDF("landscape");
+  const pdfWidth = pdf.internal.pageSize.getWidth();
+  const pdfHeight = (tempCanvas.height * pdfWidth) / tempCanvas.width; // Maintain aspect ratio
+  
+  // Add the image to the PDF (with a 10-unit margin)
+  pdf.addImage(imgData, "PNG", 10, 10, pdfWidth - 20, pdfHeight - 20);
+  pdf.save("drawing.pdf");
+};
+
+
